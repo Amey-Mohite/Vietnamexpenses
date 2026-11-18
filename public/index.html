@@ -91,12 +91,12 @@ const COUPLES=[['Amey','Daksha'],['Tejas','Karishma'],['Aai','Baba'],['Dipti','V
 const gname=g=>g.length>2?g.slice(0,-1).join(', ')+' & '+g[g.length-1]:g.join(' & ');
 const ALL=ADULTS.slice();
 // MODE: 'loading' | 'live' | 'login' | 'error'
-let MODE='loading',canWrite=true,banner='';
+let MODE='loading',canWrite=false,banner='';
 let S={rate:273.77,expenses:[]};
-let ME='';try{ME=localStorage.getItem('vts-me')||''}catch(e){}
+let ME='';
 function save(){}
 async function api(method,path,body){
-  const headers={};if(body)headers['content-type']='application/json';if(ME)headers['x-who']=ME;
+  const headers={};if(body)headers['content-type']='application/json';
   const r=await fetch('/api/'+path,{method,headers,body:body?JSON.stringify(body):undefined,cache:'no-store',credentials:'same-origin'});
   if(r.status===401&&path!=='login'){showLogin();const e=new Error('Please sign in');e.auth=true;throw e}
   if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||('HTTP '+r.status));
@@ -106,7 +106,7 @@ let busy=0,CHANGES=[],lastSync=0;
 function ago(t){const s=Math.max(0,(Date.now()-new Date(t))/1000);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+' min ago';if(s<86400)return Math.floor(s/3600)+' h ago';return Math.floor(s/86400)+' d ago'}
 async function refresh(){
   if(busy||MODE==='login')return;
-  try{const st=await api('GET','state');if(busy)return;MODE='live';banner='';S.rate=+st.rate||S.rate;S.expenses=st.expenses||[];CHANGES=st.changes||[];lastSync=Date.now();showApp();renderAll()}
+  try{const st=await api('GET','state');if(busy)return;MODE='live';banner='';S.rate=+st.rate||S.rate;S.expenses=st.expenses||[];canWrite=!!st.canEdit;ME=st.name||'';CHANGES=st.changes||[];lastSync=Date.now();showApp();renderAll()}
   catch(e){if(e.auth)return;if(MODE==='live'){banner="Couldn't refresh — showing the last loaded numbers.";renderAll()}else{MODE='error';showApp();banner="Can't reach the trip data right now. Check your connection and reopen the page.";renderAll()}}
 }
 async function mutate(fn){busy++;try{await fn();return true}catch(e){if(!e.auth)toast('Could not save — '+(e.message||'try again'));return false}finally{busy--;refresh()}}
@@ -121,14 +121,12 @@ function showLogin(){
   L.innerHTML=`<div class="card"><b>Sign in</b><form id="lf" autocomplete="on">
   <label>Username</label><input id="lu" name="username" autocomplete="username" autocapitalize="none" required>
   <label>Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required>
-  <label>Who are you? (shows on changes you make)</label><select id="lw"><option value="">— skip —</option>${PEOPLE.filter(p=>p!=='Yudhan').map(p=>`<option ${p===ME?'selected':''}>${p}</option>`).join('')}</select>
   <div id="lerr" class="warn" hidden></div>
   <div style="margin-top:14px"><button class="btn p full" id="lb" type="submit">Sign in</button></div></form></div>`;
   document.getElementById('lf').onsubmit=async ev=>{
     ev.preventDefault();const btn=document.getElementById('lb'),err=document.getElementById('lerr');btn.disabled=true;err.hidden=true;
     try{
       await api('POST','login',{user:document.getElementById('lu').value.trim(),pass:document.getElementById('lp').value});
-      ME=document.getElementById('lw').value;try{localStorage.setItem('vts-me',ME)}catch(e){}
       MODE='loading';await refresh();
     }catch(e){err.textContent=e.message==='Wrong username or password'?e.message:'Could not sign in — '+e.message;err.hidden=false}
     btn.disabled=false;
@@ -179,7 +177,7 @@ function renderSum(){
   const tejasPaid=c.paid['Tejas'];
   const tkCouple=['Tejas','Karishma'];
   const collect=PEOPLE.filter(p=>!tkCouple.includes(p)).reduce((a,p)=>a+toTejas(p),0);
-  let h=(banner?`<div class="warn" style="margin:0 0 12px">${esc(banner)}</div>`:'')+(MODE==='live'?`<div class="note" style="margin:-4px 0 10px">● Live — everyone with the link sees and edits the same numbers${canWrite?'':' (view only)'}</div>`:'')+`<div class="kpis">
+  let h=(banner?`<div class="warn" style="margin:0 0 12px">${esc(banner)}</div>`:'')+(MODE==='live'?`<div class="note" style="margin:-4px 0 10px">● Live — updates for everyone automatically</div>`:'')+`<div class="kpis">
     <div class="kpi"><div class="l">Trip total</div><div class="v">${fmt(c.total)}</div></div>
     <div class="kpi"><div class="l">Paid by Tejas</div><div class="v">${fmt(tejasPaid)}</div></div>
     <div class="kpi"><div class="l">To collect</div><div class="v pos">${fmt(collect)}</div></div>

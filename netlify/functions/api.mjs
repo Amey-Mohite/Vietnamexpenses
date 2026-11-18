@@ -5,15 +5,30 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const env = (k) => (globalThis.Netlify ? Netlify.env.get(k) : process.env[k]) || "";
 const COOKIE = "vts";
 const DAYS = 30;
-const sign = (exp) => createHmac("sha256", env("SESSION_SECRET") || env("APP_PASS")).update(`${exp}|${env("APP_USER")}|${env("APP_PASS")}`).digest("base64url");
+// Accounts: viewer = APP_USER/APP_PASS; editors = EDITORS env var "Amey:pass,Tejas:pass".
+function accounts() {
+  const list = [{ user: env("APP_USER"), pass: env("APP_PASS"), role: "view", name: "" }];
+  for (const pair of env("EDITORS").split(",")) {
+    const i = pair.indexOf(":");
+    if (i > 0) { const name = pair.slice(0, i).trim(); list.push({ user: name.toLowerCase(), pass: pair.slice(i + 1).trim(), role: "edit", name }); }
+  }
+  return list.filter((a) => a.user && a.pass);
+}
+const findAccount = (user) => accounts().find((a) => a.user === String(user || "").trim().toLowerCase()) || accounts().find((a) => a.user === String(user || "").trim());
+// Signature covers the account's current password, so changing a password signs that account out.
+const sign = (payload, acct) => createHmac("sha256", env("SESSION_SECRET") || env("APP_PASS")).update(`${payload}|${acct.user}|${acct.pass}`).digest("base64url");
 const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); };
 function readCookie(req) {
   const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)vts=([^;]+)/);
   return m ? decodeURIComponent(m[1]) : "";
 }
-function authed(req) {
-  const [exp, sig] = readCookie(req).split(".");
-  return !!exp && !!sig && +exp > Date.now() && same(sig, sign(exp));
+function session(req) {
+  const [u, exp, sig] = readCookie(req).split(".");
+  if (!u || !exp || !sig || !(+exp > Date.now())) return null;
+  let user; try { user = Buffer.from(u, "base64url").toString(); } catch { return null; }
+  const acct = accounts().find((a) => a.user === user);
+  if (!acct || !same(sig, sign(`${u}.${exp}`, acct))) return null;
+  return acct;
 }
 const cookieHeader = (val, maxAge) => `${COOKIE}=${val}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 
@@ -84,20 +99,24 @@ export default async (req) => {
     if (!env("APP_USER") || !env("APP_PASS")) return json({ error: "Login is not configured on the server" }, 500);
     if (req.method === "POST" && parts[0] === "login") {
       const { user, pass } = await req.json().catch(() => ({}));
-      if (!same(user || "", env("APP_USER")) || !same(pass || "", env("APP_PASS"))) {
+      const acct = findAccount(user);
+      if (!acct || !same(pass || "", acct.pass)) {
         await new Promise((r) => setTimeout(r, 800));
         return json({ error: "Wrong username or password" }, 401);
       }
-      const exp = String(Date.now() + DAYS * 864e5);
+      const u = Buffer.from(acct.user).toString("base64url");
+      const payload = `${u}.${Date.now() + DAYS * 864e5}`;
       return new Response(JSON.stringify({ ok: true }), {
-        headers: { "content-type": "application/json", "cache-control": "no-store", "set-cookie": cookieHeader(`${exp}.${sign(exp)}`, DAYS * 86400) },
+        headers: { "content-type": "application/json", "cache-control": "no-store", "set-cookie": cookieHeader(`${payload}.${sign(payload, acct)}`, DAYS * 86400) },
       });
     }
     if (req.method === "POST" && parts[0] === "logout") {
       return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": cookieHeader("", 0) } });
     }
-    if (!authed(req)) return json({ error: "Please sign in" }, 401);
-    const by = PEOPLE.includes(req.headers.get("x-who")) ? req.headers.get("x-who") : "";
+    const me = session(req);
+    if (!me) return json({ error: "Please sign in" }, 401);
+    const by = me.name;
+    if (req.method !== "GET" && me.role !== "edit") return json({ error: "Not allowed" }, 403);
     if (req.method === "GET" && parts[0] === "state") {
       await seedIfNeeded(s);
       const settings = (await s.get("settings", { type: "json" })) || { rate: SEED.rate };
@@ -110,7 +129,7 @@ export default async (req) => {
       ).filter(Boolean);
       const logKeys = (await s.list({ prefix: "log/" })).blobs.map((b) => b.key).sort().reverse().slice(0, 20);
       const changes = (await Promise.all(logKeys.map((k) => s.get(k, { type: "json" })))).filter(Boolean);
-      return json({ rate: settings.rate, expenses, changes });
+      return json({ rate: settings.rate, expenses, changes, canEdit: me.role === "edit", name: me.name });
     }
     if (parts[0] === "expenses" && parts[1] && /^[A-Za-z0-9_-]{1,40}$/.test(parts[1])) {
       const key = "expenses/" + parts[1];
