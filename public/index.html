@@ -66,7 +66,9 @@ pre{white-space:pre-wrap;font-size:12.5px;background:var(--bg);padding:10px;bord
 <div class="wrap">
   <h1>🇻🇳 Vietnam Trip Split</h1>
   <div class="sub">Who owes what. All totals in ₹ INR.</div>
-
+  <section id="login" hidden></section>
+  <div id="app" hidden>
+  <div class="sub" style="margin-top:-8px"><span id="who"></span><a href="#" id="lo" style="color:var(--acc)">Sign out</a></div>
   <div class="tabs">
     <button data-t="sum" class="on">Summary</button>
     <button data-t="exp">Expenses</button>
@@ -76,6 +78,7 @@ pre{white-space:pre-wrap;font-size:12.5px;background:var(--bg);padding:10px;bord
   <section id="t-sum"></section>
   <section id="t-exp" hidden></section>
   <section id="t-tally" hidden></section>
+  </div>
 </div>
 
 <div id="modal"><div class="sheet" id="sheet"></div></div>
@@ -86,60 +89,52 @@ const PEOPLE=['Amey','Daksha','Tejas','Karishma','Aai','Baba','Dipti','Vaibhav',
 const ADULTS=PEOPLE.filter(p=>p!=='Yudhan');
 const COUPLES=[['Amey','Daksha'],['Tejas','Karishma'],['Aai','Baba'],['Dipti','Vaibhav','Yudhan']];
 const gname=g=>g.length>2?g.slice(0,-1).join(', ')+' & '+g[g.length-1]:g.join(' & ');
-const KEY='vn-split-v1';
 const ALL=ADULTS.slice();
-const without=(...x)=>ADULTS.filter(p=>!x.includes(p));
-const SPA_CUSTOM={Amey:450000,Aai:490000,Baba:490000,Karishma:490000,Daksha:490000,Dipti:490000,Tejas:400000,Vaibhav:400000};
-const DEFAULTS={
-  rate:273.77, // VND per ₹1 — effective rate from the spa card charge
-  expenses:[
-    {id:1,date:'2026-11-13',desc:'Lunch',payer:'Tejas',cur:'INR',amount:3021.20,mode:'equal',people:ALL},
-    {id:2,date:'2026-11-13',desc:'Dinner – Maazi Duong Thanh',payer:'Tejas',cur:'INR',amount:5087.67,mode:'equal',people:without('Vaibhav')},
-    {id:3,date:'2026-11-15',desc:'Lunch – Noi Bai airport',payer:'Tejas',cur:'INR',amount:5199.53,mode:'equal',people:ALL},
-    {id:4,date:'2026-11-15',desc:'Dinner – Indian Ganga, Da Nang',payer:'Tejas',cur:'INR',amount:7355.50,mode:'equal',people:ALL},
-    {id:5,date:'2026-11-16',desc:'Dinner – Indian restaurant',payer:'Tejas',cur:'INR',amount:4560.28,mode:'equal',people:without('Karishma')},
-    {id:6,date:'2026-11-17',desc:'Lunch',payer:'Tejas',cur:'INR',amount:6707,mode:'equal',people:ALL},
-    {id:7,date:'2026-11-17',desc:'Dinner – Lifestyle',payer:'Tejas',cur:'INR',amount:6568.20,mode:'equal',people:ALL},
-    {id:8,date:'2026-11-17',desc:'Kaki Spa',payer:'Tejas',cur:'VND',amount:3700000,inr:13515.24,mode:'custom',people:ALL,custom:SPA_CUSTOM},
-    {id:9,date:'2026-11-18',desc:'Dinner – Banana Leaf, HCMC',payer:'Tejas',cur:'INR',amount:3159.63,mode:'equal',people:without('Amey','Vaibhav')}
-  ]
-};
-// MODE: 'loading' | 'live' (shared db) | 'local' (this device only)
-let MODE='loading',canWrite=true,banner='Loading shared data…';
-let S={rate:DEFAULTS.rate,expenses:[]};
-function loadLocal(){
-  let L;try{L=JSON.parse(localStorage.getItem(KEY))}catch(e){}
-  S=(L&&Array.isArray(L.expenses))?L:JSON.parse(JSON.stringify(DEFAULTS));
-}
-function save(){if(MODE==='local'){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}}
-function goLocal(msg){if(MODE==='live')return;MODE='local';canWrite=true;loadLocal();banner=msg;renderAll()}
+// MODE: 'loading' | 'live' | 'login' | 'error'
+let MODE='loading',canWrite=true,banner='';
+let S={rate:273.77,expenses:[]};
+let ME='';try{ME=localStorage.getItem('vts-me')||''}catch(e){}
+function save(){}
 async function api(method,path,body){
-  const r=await fetch('/api/'+path,{method,headers:body?{'content-type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+  const headers={};if(body)headers['content-type']='application/json';if(ME)headers['x-who']=ME;
+  const r=await fetch('/api/'+path,{method,headers,body:body?JSON.stringify(body):undefined,cache:'no-store',credentials:'same-origin'});
+  if(r.status===401&&path!=='login'){showLogin();const e=new Error('Please sign in');e.auth=true;throw e}
   if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||('HTTP '+r.status));
   return r.json();
 }
 let busy=0,CHANGES=[],lastSync=0;
 function ago(t){const s=Math.max(0,(Date.now()-new Date(t))/1000);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+' min ago';if(s<86400)return Math.floor(s/3600)+' h ago';return Math.floor(s/86400)+' d ago'}
 async function refresh(){
-  if(busy)return;
-  try{const st=await api('GET','state');if(busy)return;MODE='live';banner='';S.rate=+st.rate||S.rate;S.expenses=st.expenses||[];CHANGES=st.changes||[];lastSync=Date.now();renderAll()}
-  catch(e){if(MODE!=='live')goLocal("Can't reach the shared data right now — showing a copy on this device.")}
+  if(busy||MODE==='login')return;
+  try{const st=await api('GET','state');if(busy)return;MODE='live';banner='';S.rate=+st.rate||S.rate;S.expenses=st.expenses||[];CHANGES=st.changes||[];lastSync=Date.now();showApp();renderAll()}
+  catch(e){if(e.auth)return;if(MODE==='live'){banner="Couldn't refresh — showing the last loaded numbers.";renderAll()}else{MODE='error';showApp();banner="Can't reach the trip data right now. Check your connection and reopen the page.";renderAll()}}
 }
-async function mutate(fn){busy++;try{await fn();return true}catch(e){toast('Could not save — '+(e.message||'try again'));return false}finally{busy--;refresh()}}
-async function putExpense(d){
-  if(MODE!=='live'){const i=S.expenses.findIndex(x=>x.id===d.id);if(i>=0)S.expenses[i]=d;else S.expenses.push(d);save();renderAll();return true}
-  return mutate(()=>api('PUT','expenses/'+encodeURIComponent(d.id),d));
+async function mutate(fn){busy++;try{await fn();return true}catch(e){if(!e.auth)toast('Could not save — '+(e.message||'try again'));return false}finally{busy--;refresh()}}
+async function putExpense(d){return mutate(()=>api('PUT','expenses/'+encodeURIComponent(d.id),d))}
+async function removeExpense(id){S.expenses=S.expenses.filter(x=>x.id!=id);renderAll();await mutate(()=>api('DELETE','expenses/'+encodeURIComponent(id)))}
+async function putRate(r){S.rate=r;await mutate(()=>api('PUT','rate',{rate:r}))}
+function showApp(){document.getElementById('login').hidden=true;document.getElementById('app').hidden=false;document.getElementById('who').textContent=ME?('Signed in as '+ME+' · '):'Signed in · '}
+function showLogin(){
+  MODE='login';closeSheet();
+  document.getElementById('app').hidden=true;
+  const L=document.getElementById('login');L.hidden=false;
+  L.innerHTML=`<div class="card"><b>Sign in</b><form id="lf" autocomplete="on">
+  <label>Username</label><input id="lu" name="username" autocomplete="username" autocapitalize="none" required>
+  <label>Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required>
+  <label>Who are you? (shows on changes you make)</label><select id="lw"><option value="">— skip —</option>${PEOPLE.filter(p=>p!=='Yudhan').map(p=>`<option ${p===ME?'selected':''}>${p}</option>`).join('')}</select>
+  <div id="lerr" class="warn" hidden></div>
+  <div style="margin-top:14px"><button class="btn p full" id="lb" type="submit">Sign in</button></div></form></div>`;
+  document.getElementById('lf').onsubmit=async ev=>{
+    ev.preventDefault();const btn=document.getElementById('lb'),err=document.getElementById('lerr');btn.disabled=true;err.hidden=true;
+    try{
+      await api('POST','login',{user:document.getElementById('lu').value.trim(),pass:document.getElementById('lp').value});
+      ME=document.getElementById('lw').value;try{localStorage.setItem('vts-me',ME)}catch(e){}
+      MODE='loading';await refresh();
+    }catch(e){err.textContent=e.message==='Wrong username or password'?e.message:'Could not sign in — '+e.message;err.hidden=false}
+    btn.disabled=false;
+  };
 }
-async function removeExpense(id){
-  if(MODE!=='live'){S.expenses=S.expenses.filter(x=>x.id!=id);save();renderAll();return}
-  S.expenses=S.expenses.filter(x=>x.id!=id);renderAll();
-  await mutate(()=>api('DELETE','expenses/'+encodeURIComponent(id)));
-}
-async function putRate(r){
-  S.rate=r;
-  if(MODE!=='live'){save();renderAll();return}
-  await mutate(()=>api('PUT','rate',{rate:r}));
-}
+async function logout(){try{await fetch('/api/logout',{method:'POST'})}catch(e){}showLogin()}
 function initShared(){
   refresh();
   setInterval(()=>{if(MODE==='live'&&!document.hidden&&!document.getElementById('modal').classList.contains('open'))refresh()},15000);
@@ -218,7 +213,7 @@ function renderSum(){
     h+=`<div class="card"><div style="display:flex;justify-content:space-between;align-items:baseline"><b>Recent changes</b><span class="s" style="font-size:12px;color:var(--mute)">synced ${lastSync?ago(lastSync):'—'}</span></div>`;
     if(!CHANGES.length)h+=`<div class="note">No changes yet. Anything added, edited or deleted shows up here for everyone.</div>`;
     const icon={added:'＋',edited:'✎',deleted:'✕',rate:'₫'};
-    CHANGES.slice(0,10).forEach(x=>{h+=`<div class="row"><div><div class="n" style="font-weight:600">${icon[x.action]||''} ${x.action==='rate'?esc(x.desc):esc(x.action[0].toUpperCase()+x.action.slice(1))+': '+esc(x.desc||'')}</div>${x.date?`<div class="s">${esc(x.date.slice(8))}/${esc(x.date.slice(5,7))}${x.amount?' · '+esc(x.amount):''}</div>`:''}</div><span class="s" style="white-space:nowrap">${ago(x.at)}</span></div>`});
+    CHANGES.slice(0,10).forEach(x=>{h+=`<div class="row"><div><div class="n" style="font-weight:600">${icon[x.action]||''} ${x.action==='rate'?esc(x.desc):esc(x.action[0].toUpperCase()+x.action.slice(1))+': '+esc(x.desc||'')}</div><div class="s">${x.date?esc(x.date.slice(8))+'/'+esc(x.date.slice(5,7)):''}${x.amount?' · '+esc(x.amount):''}${x.by?' · by '+esc(x.by):''}</div></div><span class="s" style="white-space:nowrap">${ago(x.at)}</span></div>`});
     h+=`</div>`;
   }
   h+=`<button class="btn full" id="copy">Copy summary for WhatsApp</button>
@@ -254,13 +249,12 @@ function renderExp(){
   h+=`</div><div class="card"><label style="margin-top:0">Default VND per ₹1 (used when no card charge is entered)</label>
   <input id="rate" type="number" step="0.01" inputmode="decimal" value="${S.rate}" ${canWrite?'':'disabled'}>
   <div class="note">273.77 is the effective rate from the Scapia spa charge, which includes card markup.</div></div>
-  ${MODE==='local'?'<button class="btn d full" id="reset">Reset to original trip data</button>':''}`;
+`;
   document.getElementById('t-exp').innerHTML=h;
   const add=document.getElementById('add');if(add)add.onclick=()=>editor();
   document.querySelectorAll('[data-ed]').forEach(b=>b.onclick=()=>editor(S.expenses.find(x=>x.id==b.dataset.ed)));
   document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>confirmBox('Delete this expense for everyone?',()=>removeExpense(b.dataset.del)));
   document.getElementById('rate').onchange=ev=>{const r=+ev.target.value;if(r>0&&r!==S.rate)putRate(r)};
-  const rs=document.getElementById('reset');if(rs)rs.onclick=()=>confirmBox('Reset everything to the original trip data? Your edits will be lost.',()=>{S=JSON.parse(JSON.stringify(DEFAULTS));save();renderAll()});
 }
 
 function renderTally(){
@@ -331,7 +325,7 @@ function toast(m){const t=document.getElementById('toast');t.textContent=m;t.cla
 
 document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-t]').forEach(x=>x.classList.toggle('on',x===b));['sum','exp','tally'].forEach(t=>document.getElementById('t-'+t).hidden=t!==b.dataset.t)});
 function renderAll(){renderSum();renderExp();renderTally()}
-renderAll();
+document.getElementById('lo').onclick=ev=>{ev.preventDefault();logout()};
 initShared();
 </script>
 </body>

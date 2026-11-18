@@ -1,4 +1,21 @@
 import { getStore } from "@netlify/blobs";
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+// Login: credentials live in Netlify env vars APP_USER / APP_PASS (never in the repo).
+const env = (k) => (globalThis.Netlify ? Netlify.env.get(k) : process.env[k]) || "";
+const COOKIE = "vts";
+const DAYS = 30;
+const sign = (exp) => createHmac("sha256", env("SESSION_SECRET") || env("APP_PASS")).update(`${exp}|${env("APP_USER")}|${env("APP_PASS")}`).digest("base64url");
+const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && timingSafeEqual(x, y); };
+function readCookie(req) {
+  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)vts=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+function authed(req) {
+  const [exp, sig] = readCookie(req).split(".");
+  return !!exp && !!sig && +exp > Date.now() && same(sig, sign(exp));
+}
+const cookieHeader = (val, maxAge) => `${COOKIE}=${val}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 
 const PEOPLE = ["Amey", "Daksha", "Tejas", "Karishma", "Aai", "Baba", "Dipti", "Vaibhav", "Yudhan"];
 const ADULTS = PEOPLE.filter((p) => p !== "Yudhan");
@@ -26,13 +43,13 @@ const json = (b, s = 200) => Response.json(b, { status: s, headers: { "cache-con
 const num = (v) => (Number.isFinite(+v) ? +v : 0);
 
 async function seedIfNeeded(s) {
-  const { modified } = await s.set("meta/seeded", new Date().toISOString(), { onlyIfNew: true });
-  if (!modified) return;
-  await s.setJSON("settings", { rate: SEED.rate });
+  // "settings" is written last, so its presence means seeding finished.
+  if (await s.get("settings")) return;
   for (const e of SEED.expenses) {
     const { id, ...body } = e;
-    await s.setJSON("expenses/" + id, body);
+    if (!(await s.get("expenses/" + id))) await s.setJSON("expenses/" + id, body);
   }
+  await s.setJSON("settings", { rate: SEED.rate });
 }
 
 async function log(s, entry) {
@@ -64,6 +81,23 @@ export default async (req) => {
   const s = store();
   const parts = new URL(req.url).pathname.replace(/^\/api\/?/, "").split("/").filter(Boolean);
   try {
+    if (!env("APP_USER") || !env("APP_PASS")) return json({ error: "Login is not configured on the server" }, 500);
+    if (req.method === "POST" && parts[0] === "login") {
+      const { user, pass } = await req.json().catch(() => ({}));
+      if (!same(user || "", env("APP_USER")) || !same(pass || "", env("APP_PASS"))) {
+        await new Promise((r) => setTimeout(r, 800));
+        return json({ error: "Wrong username or password" }, 401);
+      }
+      const exp = String(Date.now() + DAYS * 864e5);
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json", "cache-control": "no-store", "set-cookie": cookieHeader(`${exp}.${sign(exp)}`, DAYS * 86400) },
+      });
+    }
+    if (req.method === "POST" && parts[0] === "logout") {
+      return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": cookieHeader("", 0) } });
+    }
+    if (!authed(req)) return json({ error: "Please sign in" }, 401);
+    const by = PEOPLE.includes(req.headers.get("x-who")) ? req.headers.get("x-who") : "";
     if (req.method === "GET" && parts[0] === "state") {
       await seedIfNeeded(s);
       const settings = (await s.get("settings", { type: "json" })) || { rate: SEED.rate };
@@ -85,13 +119,13 @@ export default async (req) => {
         if (!body.amount) return json({ error: "Amount required" }, 400);
         const prev = await s.get(key, { type: "json" });
         await s.setJSON(key, body);
-        await log(s, { action: prev ? "edited" : "added", desc: body.desc, amount: fmtAmt(body), date: body.date });
+        await log(s, { action: prev ? "edited" : "added", desc: body.desc, amount: fmtAmt(body), date: body.date, by });
         return json({ ok: true });
       }
       if (req.method === "DELETE") {
         const prev = await s.get(key, { type: "json" });
         await s.delete(key);
-        if (prev) await log(s, { action: "deleted", desc: prev.desc, amount: fmtAmt(prev), date: prev.date });
+        if (prev) await log(s, { action: "deleted", desc: prev.desc, amount: fmtAmt(prev), date: prev.date, by });
         return json({ ok: true });
       }
     }
@@ -99,7 +133,7 @@ export default async (req) => {
       const { rate } = await req.json();
       if (!(num(rate) > 0)) return json({ error: "Bad rate" }, 400);
       await s.setJSON("settings", { rate: num(rate) });
-      await log(s, { action: "rate", desc: `VND rate set to ${num(rate)} ₫/₹` });
+      await log(s, { action: "rate", desc: `VND rate set to ${num(rate)} ₫/₹`, by });
       return json({ ok: true });
     }
     return json({ error: "Not found" }, 404);
